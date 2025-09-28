@@ -1,1 +1,6 @@
 @import "tailwindcss";
+
+/* si tu veux custom styles pour react-datepicker overrides */
+.react-datepicker {
+  border-radius: 0.5rem;
+}

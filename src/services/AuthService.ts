@@ -1,6 +1,18 @@
+// src/services/AuthService.ts
 import axios from "axios";
 
-const API_URL = "http://localhost:8080";
+export const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8080";
+
+/**
+ * DTOs / Types
+ */
+export interface Address {
+  street: string;
+  number?: string;
+  zipcode: string;
+  country: string;
+  city: string;
+}
 
 export interface LoginData {
   email: string;
@@ -11,36 +23,72 @@ export interface RegisterData {
   firstName: string;
   lastName: string;
   email: string;
-  city: string;
-  dateOfBirth: string; // ISO date string
-  gender: string;
+  address: Address;         // nested address (matches your form)
+  dateOfBirth: string;      // ISO date string (yyyy-MM-dd)
+  gender: "MALE" | "FEMALE" | string;
   password: string;
   confirmPassword: string;
 }
 
-export const login = async (data: LoginData) => {
-  const response = await axios.post(`${API_URL}/auth/login`, data);
-  return response.data; // Expected to contain the JWT token
+/** Shape returned by auth endpoints (adapt if your backend differs) */
+export interface AuthResponse {
+  accessToken: string;
+  refreshToken?: string;
+
+}
+
+/**
+ * axios instance
+ */
+const axiosInstance = axios.create({
+  baseURL: API_URL,
+  headers: {
+    "Content-Type": "application/json",
+  },
+});
+
+/**
+ * Helper to set/remove Authorization header for the axios instance
+ */
+export const setAuthToken = (token?: string | null) => {
+  if (token) {
+    axiosInstance.defaults.headers.common["Authorization"] = `Bearer ${token}`;
+  } else {
+    delete axiosInstance.defaults.headers.common["Authorization"];
+  }
 };
 
-export const register = async (data: RegisterData) => {
-  const response = await axios.post(`${API_URL}/auth/register`, data);
-  return response.data; // Should return { accessToken, refreshToken, ... }
+/**
+ * Auth API calls
+ */
+export const login = async (data: LoginData): Promise<AuthResponse> => {
+  const res = await axiosInstance.post("/auth/login", data);
+  return res.data;
 };
 
-export const logout = async (token: string) => {
+export const register = async (data: RegisterData): Promise<AuthResponse | any> => {
+  // If your backend expects flattened fields instead of nested address,
+  // adapt the payload here before sending.
+  const res = await axiosInstance.post("/auth/register", data);
+  return res.data;
+};
+
+export const logout = async (token?: string) => {
   try {
-    await axios.post(
-      `${API_URL}/logout`,
-      {},
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      }
-    );
+    // If you want to use the instance header, set it then call:
+    if (token) setAuthToken(token);
+    await axiosInstance.post("/auth/logout", {});
+    // remove header after logout
+    setAuthToken(null);
   } catch (error) {
     console.error("Logout failed", error);
     throw error;
   }
+};
+
+export default {
+  login,
+  register,
+  logout,
+  setAuthToken,
 };

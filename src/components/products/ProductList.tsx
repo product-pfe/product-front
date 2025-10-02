@@ -4,11 +4,36 @@ import { useNavigate } from "react-router-dom";
 import { listProducts } from "../../services/ProductService";
 import type { ProductDto } from "../../types/product";
 
+import {
+  PieChart,
+  Pie,
+  Cell,
+  Tooltip as ReTooltip,
+  ResponsiveContainer,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Legend,
+  LineChart,
+  Line,
+} from "recharts";
+
 const DEFAULT_PAGE_SIZE_OPTIONS = [10, 20, 50];
+const DEFAULT_PAGE_SIZE = 10; // <- 10 per page by default
+
+const THEME_COLORS = {
+  yellow: "#F59E0B", // yellow-400
+  yellowDark: "#B45309",
+  black: "#000000",
+  green: "#10B981",
+  red: "#EF4444",
+  gray: "#6B7280",
+};
 
 const formatPrice = (p: any) => {
   if (p == null) return "-";
-  // if backend returns string like "12.34" or number
   const n = typeof p === "number" ? p : Number(String(p));
   if (Number.isNaN(n)) return String(p);
   return n.toFixed(2);
@@ -22,29 +47,28 @@ const ProductList: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // query + filters + sort + pagination
+  // filters + search + pagination + sort
   const [search, setSearch] = useState("");
-  const [category, setCategory] = useState<string>(""); // also passed to backend
-  const [status, setStatus] = useState<string>(""); // ACTIVE, etc.
+  const [category, setCategory] = useState<string>("");
+  const [status, setStatus] = useState<string>("");
   const [minPrice, setMinPrice] = useState<string>("");
   const [maxPrice, setMaxPrice] = useState<string>("");
   const [sortBy, setSortBy] = useState<"newest" | "priceAsc" | "priceDesc" | "name">("newest");
 
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState<number>(20);
+  const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
 
-  // helper to refetch products (category optional server-side filter)
+  // fetch products (category param optionally sent to backend via service)
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setLoading(true);
       setError(null);
       try {
-        // call backend with category param if set (listProducts handles undefined)
         const data = await listProducts(category || undefined);
         if (!cancelled) {
           setProducts(data ?? []);
-          setPage(1); // reset to first page when product list changes
+          setPage(1);
         }
       } catch (err: any) {
         console.error(err);
@@ -58,69 +82,96 @@ const ProductList: React.FC = () => {
     };
   }, [category]);
 
-  // dynamic lists for category select (derived from loaded products)
+  // derived categories from data
   const categoriesFromData = useMemo(() => {
     const s = new Set<string>();
     products.forEach((p) => p.category && s.add(String(p.category)));
     return Array.from(s).sort();
   }, [products]);
 
-  // filtered + searched + sorted
+  // filtered + sorted
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     const min = Number(minPrice || NaN);
     const max = Number(maxPrice || NaN);
 
     let arr = products.filter((p) => {
-      // category and status filters
       if (category && String(p.category) !== category) return false;
       if (status && String(p.status) !== status) return false;
 
-      // price filter
       const priceNum = typeof p.price === "number" ? p.price : Number(String(p.price));
       if (!Number.isNaN(min) && !Number.isNaN(priceNum) && priceNum < min) return false;
       if (!Number.isNaN(max) && !Number.isNaN(priceNum) && priceNum > max) return false;
 
-      // search text
       if (!q) return true;
       const hay = `${p.name ?? ""} ${p.description ?? ""} ${p.category ?? ""}`.toLowerCase();
       return hay.includes(q);
     });
 
-    // sort
     arr.sort((a, b) => {
       if (sortBy === "newest") {
         const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
         const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
         return tb - ta;
       }
-      if (sortBy === "priceAsc") {
-        const pa = Number(a.price ?? 0);
-        const pb = Number(b.price ?? 0);
-        return pa - pb;
-      }
-      if (sortBy === "priceDesc") {
-        const pa = Number(a.price ?? 0);
-        const pb = Number(b.price ?? 0);
-        return pb - pa;
-      }
-      if (sortBy === "name") {
-        return String(a.name ?? "").localeCompare(String(b.name ?? ""));
-      }
+      if (sortBy === "priceAsc") return Number(a.price ?? 0) - Number(b.price ?? 0);
+      if (sortBy === "priceDesc") return Number(b.price ?? 0) - Number(a.price ?? 0);
+      if (sortBy === "name") return String(a.name ?? "").localeCompare(String(b.name ?? ""));
       return 0;
     });
 
     return arr;
   }, [products, search, category, status, minPrice, maxPrice, sortBy]);
 
-  // pagination computed
+  // pagination
   const total = filtered.length;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const currentPage = Math.min(Math.max(1, page), totalPages);
   const paginated = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
-  // helpers for UI actions
-  const goTo = (n: number) => setPage(Math.min(Math.max(1, n), totalPages));
+  // stats for charts
+  const stats = useMemo(() => {
+    const byCategory: Record<string, number> = {};
+    const byStatus: Record<string, number> = {};
+    const monthly: Record<string, number> = {};
+    let priceSum = 0;
+    let priceCount = 0;
+
+    products.forEach((p) => {
+      const cat = p.category ?? "OTHER";
+      byCategory[cat] = (byCategory[cat] || 0) + 1;
+
+      const st = (p.status ?? "ACTIVE").toString();
+      byStatus[st] = (byStatus[st] || 0) + 1;
+
+      if (p.createdAt) {
+        // group by YYYY-MM
+        const d = new Date(p.createdAt);
+        if (!Number.isNaN(d.getTime())) {
+          const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+          monthly[key] = (monthly[key] || 0) + 1;
+        }
+      }
+
+      const pv = typeof p.price === "number" ? p.price : Number(String(p.price));
+      if (!Number.isNaN(pv)) {
+        priceSum += pv;
+        priceCount++;
+      }
+    });
+
+    const categoryData = Object.entries(byCategory).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
+    const statusData = Object.entries(byStatus).map(([name, value]) => ({ name, value }));
+    const monthlyData = Object.entries(monthly)
+      .map(([k, v]) => ({ month: k, value: v }))
+      .sort((a, b) => a.month.localeCompare(b.month));
+
+    const avgPrice = priceCount > 0 ? priceSum / priceCount : 0;
+
+    return { categoryData, statusData, monthlyData, avgPrice, total: products.length };
+  }, [products]);
+
+  // reset filters
   const handleResetFilters = () => {
     setSearch("");
     setCategory("");
@@ -130,6 +181,8 @@ const ProductList: React.FC = () => {
     setSortBy("newest");
     setPage(1);
   };
+
+  const goTo = (n: number) => setPage(Math.min(Math.max(1, n), totalPages));
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
@@ -152,7 +205,6 @@ const ProductList: React.FC = () => {
       {/* Filters card */}
       <div className="bg-white border rounded-lg shadow-sm p-4 mb-6">
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-          {/* search */}
           <div className="md:col-span-2 flex items-center gap-2">
             <div className="inline-flex items-center gap-2 bg-gray-50 border border-gray-100 rounded px-3 py-2 w-full">
               <svg className="w-5 h-5 text-gray-400" viewBox="0 0 24 24" fill="none" aria-hidden>
@@ -169,7 +221,6 @@ const ProductList: React.FC = () => {
             </div>
           </div>
 
-          {/* category */}
           <select
             value={category}
             onChange={(e) => { setCategory(e.target.value); setPage(1); }}
@@ -182,7 +233,6 @@ const ProductList: React.FC = () => {
             ))}
           </select>
 
-          {/* status */}
           <select
             value={status}
             onChange={(e) => { setStatus(e.target.value); setPage(1); }}
@@ -195,7 +245,6 @@ const ProductList: React.FC = () => {
             <option value="ARCHIVED">Archived</option>
           </select>
 
-          {/* price range */}
           <div className="flex gap-2">
             <input
               value={minPrice}
@@ -215,7 +264,6 @@ const ProductList: React.FC = () => {
             />
           </div>
 
-          {/* sort + pageSize */}
           <div className="flex items-center gap-2">
             <select
               value={sortBy}
@@ -258,7 +306,7 @@ const ProductList: React.FC = () => {
       ) : (
         <>
           {/* desktop table */}
-          <div className="hidden md:block bg-white shadow rounded-lg border overflow-hidden">
+          <div className="hidden md:block bg-white shadow rounded-lg border overflow-hidden mb-6">
             <table className="min-w-full">
               <thead className="bg-gray-50">
                 <tr>
@@ -297,7 +345,7 @@ const ProductList: React.FC = () => {
           </div>
 
           {/* mobile grid */}
-          <div className="md:hidden grid gap-4">
+          <div className="md:hidden grid gap-4 mb-6">
             {paginated.map((p) => (
               <div key={p.id} className="bg-white shadow rounded-lg p-4 flex gap-4">
                 <div className="w-20 h-20 rounded bg-gray-100 flex items-center justify-center overflow-hidden">
@@ -321,7 +369,65 @@ const ProductList: React.FC = () => {
             ))}
           </div>
 
-          {/* pagination controls */}
+          {/* charts */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+            <div className="bg-white p-4 rounded-lg shadow">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm font-medium text-gray-700">Répartition par catégorie</div>
+                <div className="text-xs text-gray-500">{stats.categoryData.reduce((s, x) => s + x.value, 0)} produits</div>
+              </div>
+              <div style={{ height: 200 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie dataKey="value" data={stats.categoryData} outerRadius={70} innerRadius={28} label>
+                      {stats.categoryData.map((entry, idx) => (
+                        <Cell key={`c-${idx}`} fill={[THEME_COLORS.yellow, THEME_COLORS.green, THEME_COLORS.red, THEME_COLORS.gray][idx % 4]} />
+                      ))}
+                    </Pie>
+                    <ReTooltip />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            <div className="bg-white p-4 rounded-lg shadow">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm font-medium text-gray-700">Statut des produits</div>
+                <div className="text-xs text-gray-500">{stats.statusData.reduce((s, x) => s + x.value, 0)} produits</div>
+              </div>
+              <div style={{ height: 200 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={stats.statusData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="name" />
+                    <YAxis />
+                    <ReTooltip />
+                    <Bar dataKey="value" fill={THEME_COLORS.yellow} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            <div className="bg-white p-4 rounded-lg shadow">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm font-medium text-gray-700">Ajouts par mois</div>
+                <div className="text-xs text-gray-500">Derniers mois</div>
+              </div>
+              <div style={{ height: 200 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={stats.monthlyData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="month" />
+                    <YAxis />
+                    <ReTooltip />
+                    <Line type="monotone" dataKey="value" stroke={THEME_COLORS.black} strokeWidth={2} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </div>
+
+          {/* pagination */}
           <div className="mt-4 flex items-center justify-between gap-3">
             <div className="text-sm text-gray-600">
               Affichage <span className="font-medium">{(currentPage - 1) * pageSize + 1}</span> -{" "}
@@ -333,14 +439,11 @@ const ProductList: React.FC = () => {
                 Préc.
               </button>
 
-              {/* simple page buttons (shows up to 7 pages, with ellipsis) */}
               <div className="hidden sm:flex items-center gap-1">
                 {Array.from({ length: totalPages }).map((_, idx) => {
                   const n = idx + 1;
-                  // show a window of pages
                   const show = totalPages <= 7 || Math.abs(n - currentPage) <= 2 || n === 1 || n === totalPages;
                   if (!show) {
-                    // render ellipsis only once per gap
                     const prev = n - 1;
                     if (prev > 0 && (prev === 1 || Math.abs(prev - currentPage) <= 2 || prev === totalPages)) return null;
                     return <span key={`dot-${n}`} className="px-2">…</span>;
